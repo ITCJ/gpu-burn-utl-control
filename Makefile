@@ -15,7 +15,15 @@ override CFLAGS   += -I${CUDAPATH}/include
 override CFLAGS   += -std=c++11
 override CFLAGS   += -DIS_JETSON=${IS_JETSON}
 
-override LDFLAGS  ?=
+# 检查 libnvidia-ml.so 的路径
+NVML_PATH ?= $(shell find /usr/lib64 /usr/local/cuda/lib64 -name libnvidia-ml.so* 2>/dev/null | head -n 1 | xargs dirname)
+
+# 如果找到 NVML 库路径，则添加到 LDFLAGS
+ifneq ($(NVML_PATH),)
+    override LDFLAGS += -L${NVML_PATH} -lnvidia-ml
+else
+    $(error "libnvidia-ml.so not found. Please ensure NVML is installed.")
+endif
 override LDFLAGS  += -lcuda
 override LDFLAGS  += -L${CUDAPATH}/lib64
 override LDFLAGS  += -L${CUDAPATH}/lib64/stubs

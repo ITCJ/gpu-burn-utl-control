@@ -34,7 +34,7 @@
 
 // Used to report op/s, measured through Visual Profiler, CUBLAS from CUDA 7.5
 // (Seems that they indeed take the naive dim^3 approach)
-//#define OPS_PER_MUL 17188257792ul // Measured for SIZE = 2048
+// #define OPS_PER_MUL 17188257792ul // Measured for SIZE = 2048
 #define OPS_PER_MUL 1100048498688ul // Extrapolated for SIZE = 8192
 
 #include <algorithm>
@@ -45,6 +45,8 @@
 #include <exception>
 #include <fstream>
 #include <map>
+#include <nvml.h>
+#include <regex>
 #include <signal.h>
 #include <stdexcept>
 #include <string.h>
@@ -56,9 +58,10 @@
 #include <time.h>
 #include <unistd.h>
 #include <vector>
-#include <regex>
 
-#define SIGTERM_TIMEOUT_THRESHOLD_SECS 30 // number of seconds for sigterm to kill child processes before forcing a sigkill
+#define SIGTERM_TIMEOUT_THRESHOLD_SECS                                         \
+    30 // number of seconds for sigterm to kill child processes before forcing a
+       // sigkill
 
 #include "cublas_v2.h"
 #define CUDA_ENABLE_DEPRECATED
@@ -78,12 +81,13 @@ void _checkError(int rCode, std::string file, int line, std::string desc = "") {
     }
 }
 
-void _checkError(cublasStatus_t rCode, std::string file, int line, std::string desc = "") {
+void _checkError(cublasStatus_t rCode, std::string file, int line,
+                 std::string desc = "") {
     if (rCode != CUBLAS_STATUS_SUCCESS) {
 #if CUBLAS_VER_MAJOR >= 12
-		const char *err = cublasGetStatusString(rCode);
+        const char *err = cublasGetStatusString(rCode);
 #else
-		const char *err = "";
+        const char *err = "";
 #endif
         throw std::runtime_error(
             (desc == "" ? std::string("Error (")
@@ -108,7 +112,8 @@ bool g_running = false;
 template <class T> class GPU_Test {
   public:
     GPU_Test(int dev, bool doubles, bool tensors, const char *kernelFile)
-        : d_devNumber(dev), d_doubles(doubles), d_tensors(tensors), d_kernelFile(kernelFile){
+        : d_devNumber(dev), d_doubles(doubles), d_tensors(tensors),
+          d_kernelFile(kernelFile) {
         checkError(cuDeviceGet(&d_dev, d_devNumber));
         checkError(cuCtxCreate(&d_ctx, 0, d_dev));
 
@@ -205,6 +210,17 @@ template <class T> class GPU_Test {
         initCompareKernel();
     }
 
+    // 获取当前 GPU 利用率
+    int getGpuUtilization() {
+        nvmlDevice_t device;
+        nvmlInit();
+        nvmlDeviceGetHandleByIndex(d_devNumber, &device); // 使用指定的 GPU 编号
+        nvmlUtilization_t utilization;
+        nvmlDeviceGetUtilizationRates(device, &utilization);
+        nvmlShutdown();
+        return utilization.gpu; // 返回 GPU 利用率（百分比）
+    }
+
     void compute() {
         bind();
         static const float alpha = 1.0f;
@@ -213,6 +229,16 @@ template <class T> class GPU_Test {
         static const double betaD = 0.0;
 
         for (size_t i = 0; i < d_iters; ++i) {
+            // 检查 GPU 利用率
+            int utilization = getGpuUtilization();
+            if (utilization > 40) {
+                printf("Skipping iteration %zu as GPU utilization is %d%% "
+                       "(above 40%%)\n",
+                       i, utilization);
+                continue; // 跳过此次循环
+            }
+
+            // 执行计算
             if (d_doubles)
                 checkError(
                     cublasDgemm(d_cublas, CUBLAS_OP_N, CUBLAS_OP_N, SIZE, SIZE,
@@ -234,7 +260,8 @@ template <class T> class GPU_Test {
         {
             std::ifstream f(d_kernelFile);
             checkError(f.good() ? CUDA_SUCCESS : CUDA_ERROR_NOT_FOUND,
-                       std::string("couldn't find compare kernel: ") + d_kernelFile);
+                       std::string("couldn't find compare kernel: ") +
+                           d_kernelFile);
         }
         checkError(cuModuleLoad(&d_module, d_kernelFile), "load module");
         checkError(cuModuleGetFunction(&d_function, d_module,
@@ -300,12 +327,12 @@ template <class T> class GPU_Test {
 
 // Returns the number of devices
 int initCuda() {
-	try {
-		checkError(cuInit(0));
-	} catch (std::runtime_error e) {
-		fprintf(stderr, "Couldn't init CUDA: %s\n", e.what());
-		return 0;
-	}
+    try {
+        checkError(cuInit(0));
+    } catch (std::runtime_error e) {
+        fprintf(stderr, "Couldn't init CUDA: %s\n", e.what());
+        return 0;
+    }
     int deviceCount = 0;
     checkError(cuDeviceGetCount(&deviceCount));
 
@@ -441,7 +468,8 @@ void updateTemps(int handle, std::vector<int> *temps) {
 }
 
 void listenClients(std::vector<int> clientFd, std::vector<pid_t> clientPid,
-                   int runTime, std::chrono::seconds sigterm_timeout_threshold_secs) {
+                   int runTime,
+                   std::chrono::seconds sigterm_timeout_threshold_secs) {
     fd_set waitHandles;
 
     pid_t tempPid;
@@ -603,7 +631,8 @@ void listenClients(std::vector<int> clientFd, std::vector<pid_t> clientPid,
 
     kill(tempPid, SIGTERM);
 
-    // processes should be terminated by SIGTERM within threshold time (so wait and then check pids)
+    // processes should be terminated by SIGTERM within threshold time (so wait
+    // and then check pids)
     std::this_thread::sleep_for(sigterm_timeout_threshold_secs);
 
     // check each process and see if they are alive
@@ -625,18 +654,21 @@ void listenClients(std::vector<int> clientFd, std::vector<pid_t> clientPid,
         killed_processes.push_back(return_pid);
     }
 
-    // number of killed process should be number GPUs + 1 (need to add tempPid process) to exit while loop early
+    // number of killed process should be number GPUs + 1 (need to add tempPid
+    // process) to exit while loop early
     if (killed_processes.size() != clientPid.size() + 1) {
         printf("\nKilling processes with SIGKILL (force kill)\n");
 
         for (size_t i = 0; i < clientPid.size(); ++i) {
             // check if pid was already killed with SIGTERM before using SIGKILL
-            if (std::find(killed_processes.begin(), killed_processes.end(), clientPid.at(i)) == killed_processes.end())
+            if (std::find(killed_processes.begin(), killed_processes.end(),
+                          clientPid.at(i)) == killed_processes.end())
                 kill(clientPid.at(i), SIGKILL);
         }
 
         // check if pid was already killed with SIGTERM before using SIGKILL
-        if (std::find(killed_processes.begin(), killed_processes.end(), tempPid) == killed_processes.end())
+        if (std::find(killed_processes.begin(), killed_processes.end(),
+                      tempPid) == killed_processes.end())
             kill(tempPid, SIGKILL);
     }
 
@@ -653,7 +685,7 @@ void listenClients(std::vector<int> clientFd, std::vector<pid_t> clientPid,
 
 template <class T>
 void launch(int runLength, bool useDoubles, bool useTensorCores,
-            ssize_t useBytes, int device_id, const char * kernelFile,
+            ssize_t useBytes, int device_id, const char *kernelFile,
             std::chrono::seconds sigterm_timeout_threshold_secs) {
 #if IS_JETSON
     std::ifstream f_model("/proc/device-tree/model");
@@ -700,7 +732,8 @@ void launch(int runLength, bool useDoubles, bool useTensorCores,
             close(mainPipe[1]);
             int devCount;
             read(readMain, &devCount, sizeof(int));
-            listenClients(clientPipes, clientPids, runLength, sigterm_timeout_threshold_secs);
+            listenClients(clientPipes, clientPids, runLength,
+                          sigterm_timeout_threshold_secs);
         }
         for (size_t i = 0; i < clientPipes.size(); ++i)
             close(clientPipes.at(i));
@@ -713,8 +746,8 @@ void launch(int runLength, bool useDoubles, bool useTensorCores,
             int devCount = initCuda();
             write(writeFd, &devCount, sizeof(int));
 
-            startBurn<T>(0, writeFd, A, B, useDoubles, useTensorCores,
-                         useBytes, kernelFile);
+            startBurn<T>(0, writeFd, A, B, useDoubles, useTensorCores, useBytes,
+                         kernelFile);
 
             close(writeFd);
             return;
@@ -751,7 +784,8 @@ void launch(int runLength, bool useDoubles, bool useTensorCores,
                     }
                 }
 
-                listenClients(clientPipes, clientPids, runLength, sigterm_timeout_threshold_secs);
+                listenClients(clientPipes, clientPids, runLength,
+                              sigterm_timeout_threshold_secs);
             }
         }
         for (size_t i = 0; i < clientPipes.size(); ++i)
@@ -774,7 +808,8 @@ void showHelp() {
     printf("-i N\tExecute only on GPU N\n");
     printf("-c FILE\tUse FILE as compare kernel.  Default is %s\n",
            COMPARE_KERNEL);
-    printf("-stts T\tSet timeout threshold to T seconds for using SIGTERM to abort child processes before using SIGKILL.  Default is %d\n",
+    printf("-stts T\tSet timeout threshold to T seconds for using SIGTERM to "
+           "abort child processes before using SIGKILL.  Default is %d\n",
            SIGTERM_TIMEOUT_THRESHOLD_SECS);
     printf("-h\tShow this help message\n\n");
     printf("Examples:\n");
@@ -806,7 +841,8 @@ int main(int argc, char **argv) {
     ssize_t useBytes = 0; // 0 == use USEMEM% of free mem
     int device_id = -1;
     char *kernelFile = (char *)COMPARE_KERNEL;
-    std::chrono::seconds sigterm_timeout_threshold_secs = std::chrono::seconds(SIGTERM_TIMEOUT_THRESHOLD_SECS);
+    std::chrono::seconds sigterm_timeout_threshold_secs =
+        std::chrono::seconds(SIGTERM_TIMEOUT_THRESHOLD_SECS);
 
     std::vector<std::string> args(argv, argv + argc);
     for (size_t i = 1; i < args.size(); ++i) {
@@ -887,7 +923,8 @@ int main(int argc, char **argv) {
             thisParam++;
 
             if (argv[i + 1]) {
-                sigterm_timeout_threshold_secs = std::chrono::seconds(atoi(argv[i + 1]));
+                sigterm_timeout_threshold_secs =
+                    std::chrono::seconds(atoi(argv[i + 1]));
                 thisParam++;
             }
         }
