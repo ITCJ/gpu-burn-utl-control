@@ -111,9 +111,11 @@ bool g_running = false;
 
 template <class T> class GPU_Test {
   public:
-    GPU_Test(int dev, bool doubles, bool tensors, const char *kernelFile)
+    GPU_Test(int dev, bool doubles, bool tensors, const char *kernelFile,
+             int utilizationThreshold)
         : d_devNumber(dev), d_doubles(doubles), d_tensors(tensors),
-          d_kernelFile(kernelFile) {
+          d_kernelFile(kernelFile),
+          d_utilizationThreshold(utilizationThreshold) {
         checkError(cuDeviceGet(&d_dev, d_devNumber));
         checkError(cuCtxCreate(&d_ctx, 0, d_dev));
 
@@ -231,10 +233,10 @@ template <class T> class GPU_Test {
         for (size_t i = 0; i < d_iters; ++i) {
             // 检查 GPU 利用率
             int utilization = getGpuUtilization();
-            if (utilization > 40) {
+            if (utilization > d_utilizationThreshold) {
                 printf("Skipping iteration %zu as GPU utilization is %d%% "
-                       "(above 40%%)\n",
-                       i, utilization);
+                       "(above %d%%)\n",
+                       i, utilization, d_utilizationThreshold);
                 continue; // 跳过此次循环
             }
 
@@ -323,6 +325,7 @@ template <class T> class GPU_Test {
     int *d_faultyElemsHost;
 
     cublasHandle_t d_cublas;
+    int d_utilizationThreshold;
 };
 
 // Returns the number of devices
@@ -349,10 +352,12 @@ int initCuda() {
 
 template <class T>
 void startBurn(int index, int writeFd, T *A, T *B, bool doubles, bool tensors,
-               ssize_t useBytes, const char *kernelFile) {
+               ssize_t useBytes, const char *kernelFile,
+               int utilizationThreshold) {
     GPU_Test<T> *our;
     try {
-        our = new GPU_Test<T>(index, doubles, tensors, kernelFile);
+        our = new GPU_Test<T>(index, doubles, tensors, kernelFile,
+                              utilizationThreshold);
         our->initBuffers(A, B, useBytes);
     } catch (const std::exception &e) {
         fprintf(stderr, "Couldn't init a GPU test: %s\n", e.what());
@@ -454,9 +459,10 @@ void updateTemps(int handle, std::vector<int> *temps) {
 #else
     // FIXME: The syntax of this print might change in the future..
     int tempValue;
-    if (sscanf(data,
-               "		GPU Current Temp			: %d C",
-               &tempValue) == 1) {
+    if (sscanf(
+            data,
+            "		GPU Current Temp				: %d C",
+            &tempValue) == 1) {
         temps->at(gpuIter) = tempValue;
         gpuIter = (gpuIter + 1) % (temps->size());
     } else if (!strcmp(data, "		Gpu				"
@@ -686,7 +692,8 @@ void listenClients(std::vector<int> clientFd, std::vector<pid_t> clientPid,
 template <class T>
 void launch(int runLength, bool useDoubles, bool useTensorCores,
             ssize_t useBytes, int device_id, const char *kernelFile,
-            std::chrono::seconds sigterm_timeout_threshold_secs) {
+            std::chrono::seconds sigterm_timeout_threshold_secs,
+            int utilizationThreshold) {
 #if IS_JETSON
     std::ifstream f_model("/proc/device-tree/model");
     std::stringstream ss_model;
@@ -724,7 +731,7 @@ void launch(int runLength, bool useDoubles, bool useTensorCores,
             int devCount = 1;
             write(writeFd, &devCount, sizeof(int));
             startBurn<T>(device_id, writeFd, A, B, useDoubles, useTensorCores,
-                         useBytes, kernelFile);
+                         useBytes, kernelFile, utilizationThreshold);
             close(writeFd);
             return;
         } else {
@@ -747,7 +754,7 @@ void launch(int runLength, bool useDoubles, bool useTensorCores,
             write(writeFd, &devCount, sizeof(int));
 
             startBurn<T>(0, writeFd, A, B, useDoubles, useTensorCores, useBytes,
-                         kernelFile);
+                         kernelFile, utilizationThreshold);
 
             close(writeFd);
             return;
@@ -774,7 +781,8 @@ void launch(int runLength, bool useDoubles, bool useTensorCores,
                         close(slavePipe[0]);
                         initCuda();
                         startBurn<T>(i, slavePipe[1], A, B, useDoubles,
-                                     useTensorCores, useBytes, kernelFile);
+                                     useTensorCores, useBytes, kernelFile,
+                                     utilizationThreshold);
 
                         close(slavePipe[1]);
                         return;
@@ -811,6 +819,7 @@ void showHelp() {
     printf("-stts T\tSet timeout threshold to T seconds for using SIGTERM to "
            "abort child processes before using SIGKILL.  Default is %d\n",
            SIGTERM_TIMEOUT_THRESHOLD_SECS);
+    printf("-u N\tSet GPU utilization threshold to N%%. Default is 40%%\n");
     printf("-h\tShow this help message\n\n");
     printf("Examples:\n");
     printf("  gpu-burn -d 3600 # burns all GPUs with doubles for an hour\n");
@@ -818,6 +827,7 @@ void showHelp() {
         "  gpu-burn -m 50%% # burns using 50%% of the available GPU memory\n");
     printf("  gpu-burn -l # list GPUs\n");
     printf("  gpu-burn -i 2 # burns only GPU of index 2\n");
+    printf("  gpu-burn -u 60 # sets GPU utilization threshold to 60%%\n");
 }
 
 // NNN MB
@@ -843,6 +853,7 @@ int main(int argc, char **argv) {
     char *kernelFile = (char *)COMPARE_KERNEL;
     std::chrono::seconds sigterm_timeout_threshold_secs =
         std::chrono::seconds(SIGTERM_TIMEOUT_THRESHOLD_SECS);
+    int utilizationThreshold = 40; // 默认值为 40
 
     std::vector<std::string> args(argv, argv + argc);
     for (size_t i = 1; i < args.size(); ++i) {
@@ -928,6 +939,19 @@ int main(int argc, char **argv) {
                 thisParam++;
             }
         }
+        if (argc >= 2 && strncmp(argv[i], "-u", 2) == 0) {
+            thisParam++;
+            if (argv[i][2]) {
+                utilizationThreshold = strtol(argv[i] + 2, NULL, 0);
+            } else if (i + 1 < args.size()) {
+                i++;
+                thisParam++;
+                utilizationThreshold = strtol(argv[i], NULL, 0);
+            } else {
+                fprintf(stderr, "Syntax error near -u\n");
+                exit(EINVAL);
+            }
+        }
     }
 
     if (argc - thisParam < 2)
@@ -937,12 +961,16 @@ int main(int argc, char **argv) {
     printf("Using compare file: %s\n", kernelFile);
     printf("Burning for %d seconds.\n", runLength);
 
+    printf("Using GPU utilization threshold: %d%%\n", utilizationThreshold);
+
     if (useDoubles)
         launch<double>(runLength, useDoubles, useTensorCores, useBytes,
-                       device_id, kernelFile, sigterm_timeout_threshold_secs);
+                       device_id, kernelFile, sigterm_timeout_threshold_secs,
+                       utilizationThreshold);
     else
         launch<float>(runLength, useDoubles, useTensorCores, useBytes,
-                      device_id, kernelFile, sigterm_timeout_threshold_secs);
+                      device_id, kernelFile, sigterm_timeout_threshold_secs,
+                      utilizationThreshold);
 
     return 0;
 }
