@@ -234,9 +234,9 @@ template <class T> class GPU_Test {
             // 检查 GPU 利用率
             int utilization = getGpuUtilization();
             if (utilization > d_utilizationThreshold) {
-                printf("Skipping iteration %zu as GPU utilization is %d%% "
-                       "(above %d%%)\n",
-                       i, utilization, d_utilizationThreshold);
+                // printf("Skipping iteration %zu as GPU utilization is %d%% "
+                //        "(above %d%%)\n",
+                //        i, utilization, d_utilizationThreshold);
                 continue; // 跳过此次循环
             }
 
