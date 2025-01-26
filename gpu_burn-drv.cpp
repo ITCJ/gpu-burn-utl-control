@@ -229,16 +229,9 @@ template <class T> class GPU_Test {
         static const float beta = 0.0f;
         static const double alphaD = 1.0;
         static const double betaD = 0.0;
+        static int delay_time = 1000; // sleep time
 
         for (size_t i = 0; i < d_iters; ++i) {
-            // 检查 GPU 利用率
-            int utilization = getGpuUtilization();
-            if (utilization > d_utilizationThreshold) {
-                // printf("Skipping iteration %zu as GPU utilization is %d%% "
-                //        "(above %d%%)\n",
-                //        i, utilization, d_utilizationThreshold);
-                continue; // 跳过此次循环
-            }
 
             // 执行计算
             if (d_doubles)
@@ -255,6 +248,23 @@ template <class T> class GPU_Test {
                                 (const float *)d_Bdata, SIZE, &beta,
                                 (float *)d_Cdata + i * SIZE * SIZE, SIZE),
                     "SGEMM");
+
+            // 检查 GPU 利用率
+            if (i == 0 && d_utilizationThreshold < 100) {
+                int utilization = getGpuUtilization();
+                if (utilization > d_utilizationThreshold) {
+                    delay_time += 1000;
+                    printf("Utilization %d > %d, increase delay to %d.\n",
+                           utilization, d_utilizationThreshold, delay_time);
+                } else if (utilization < int(d_utilizationThreshold) &&
+                           delay_time > 0) {
+                    delay_time -= 1000;
+                    printf("Utilization %d < %d, decrease delay to %d.\n",
+                           utilization, int(d_utilizationThreshold * 0.5),
+                           delay_time);
+                }
+            }
+            usleep(delay_time);
         }
     }
 
@@ -853,7 +863,7 @@ int main(int argc, char **argv) {
     char *kernelFile = (char *)COMPARE_KERNEL;
     std::chrono::seconds sigterm_timeout_threshold_secs =
         std::chrono::seconds(SIGTERM_TIMEOUT_THRESHOLD_SECS);
-    int utilizationThreshold = 40; // 默认值为 40
+    int utilizationThreshold = 100; // 默认值为 40
 
     std::vector<std::string> args(argv, argv + argc);
     for (size_t i = 1; i < args.size(); ++i) {
