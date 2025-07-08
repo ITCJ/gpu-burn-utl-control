@@ -64,22 +64,15 @@ can be set to change the resulting image tag:
 # Usage
 
     GPU Burn
-    Usage: gpu-burn [OPTIONS] [TIME]
-
-    -m X    Use X MB of memory.
-    -m N%   Use N% of the available GPU memory.  Default is 90%
-    -d      Use doubles
-    -tc     Try to use Tensor cores
-    -l      Lists all GPUs in the system
-    -i N    Execute only on GPU N
-    -c FILE Use FILE as compare kernel.  Default is compare.ptx
-    -stts T Set timeout threshold to T seconds for using SIGTERM to abort child processes before using SIGKILL.  Default is 30
-    -u N    Set GPU utilization threshold to N%. Default is 40%
-    -h      Show this help message
-
-    Examples:
-    gpu-burn -d 3600 # burns all GPUs with doubles for an hour
-    gpu-burn -m 50% # burns using 50% of the available GPU memory
-    gpu-burn -l # list GPUs
-    gpu-burn -i 2 # burns only GPU of index 2
-    gpu-burn -u 60 # sets GPU utilization threshold to 60%
+    Usage: gpu_burn [OPTIONS] [TIME]
+    
+    -m X   Use X MB of memory
+    -m N%  Use N% of the available GPU memory
+    -d     Use doubles
+    -tc    Try to use Tensor cores (if available)
+    -l     List all GPUs in the system
+    -i N   Execute only on GPU N
+    -h     Show this help message
+    
+    Example:
+    gpu_burn -d 3600

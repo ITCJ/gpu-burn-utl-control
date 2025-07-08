@@ -260,7 +260,7 @@ template <class T> class GPU_Test {
                            delay_time > 0) {
                     delay_time -= 1000;
                     printf("Utilization %d < %d, decrease delay to %d.\n",
-                           utilization, int(d_utilizationThreshold * 0.5),
+                           utilization, int(d_utilizationThreshold),
                            delay_time);
                 }
             }
